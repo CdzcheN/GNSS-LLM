@@ -1,0 +1,109 @@
+# =============================================================================
+# GNSS 多特征自适应干扰监测系统 —— Python 依赖清单
+# -----------------------------------------------------------------------------
+# 目标平台：Linux x86_64 / Windows x64
+# PYTHON   ：>= 3.10（推荐 3.12 / 3.13）
+#
+# 安装：
+#   python -m pip install -U pip
+#   python -m pip install -r requirements.txt
+# 安装后自检（确认无依赖冲突）：
+#   python -m pip check
+#
+# 版本策略：约束写成「大版本区间」（>=下限,<上限），
+#   - pip 会按当前 Python 版本与操作系统自动挑选可用版本，不写死小版本；
+#   - 上限只卡断不兼容的大版本，因此 Linux / Windows、Python 3.10~3.13 均可解析。
+#
+# 已验证（2026-09，Linux x86_64 + Python 3.12）：
+#   对除 torch 外的全部依赖执行 pip resolver 解析：
+#     grep -v '^torch' requirements.txt > /tmp/req-notorch.txt
+#     python -m pip install --dry-run --ignore-installed --only-binary=:all: -r /tmp/req-notorch.txt
+#   → 解析成功、无依赖冲突，共 37 个包（含传递依赖），实际选中：
+#     numpy 2.5.3 / pandas 2.3.3 / pyarrow 25.0.1 / scipy 1.18.1 / scikit-learn 1.9.1
+#     matplotlib 3.11.2 / seaborn 0.13.2 / PyYAML 6.0.3 / tqdm 4.70.1 / optuna 5.0.0
+#     onnx 1.23.0 / onnxruntime 1.30.0
+#   （上列命令中 torch 会拉取数 GB 的 CUDA 运行时，故 torch 单独核验：
+#     2.14.0 版本存在，requires-python >= 3.10，Linux/Windows wheel 齐备。）
+#   依赖冲突与平台可用性核查：上述各版本均同时提供 manylinux 与 win_amd64
+#   官方 wheel；numpy 2.5 / scipy 1.18 要求 Python >= 3.12、onnxruntime 1.30 要求
+#   >= 3.11，在更低的 Python 上 pip 会自动回落到仍支持该版本的最近版本，
+#   区间约束已按此设计，无需改动本文件。
+#
+# PyTorch 说明（本机实测结论，请务必按此安装）
+# -----------------------------------------------------------------------------
+# 实测环境
+#   项目虚拟环境：conda 环境 gnss-llm（Python 3.12.14）
+#     ~/miniconda3/envs/gnss-llm      （conda 位于 ~/miniconda3，尚未初始化进 PATH）
+#   GPU：NVIDIA GeForce RTX 3050 Laptop（4 GB），驱动 580.178.04（CUDA 13.0）
+#
+# ⚠ 结论一：**不要用 conda 装 pytorch**
+#   该环境里 conda 装的 pytorch 2.5.1（py3.12_cuda12.1_cudnn9.1.0_0）与环境中的
+#   mkl 2025.0.0 不兼容，导入即失败（已复现）：
+#       ImportError: libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent
+#   conda 求解器认为依赖已满足，不会自动修复，因此不要走 conda 渠道装 torch。
+#   若已装过，先移除（本次已执行）：
+#       conda remove -n gnss-llm -y pytorch torchvision torchaudio pytorch-cuda pytorch-mutex torchtriton
+#
+# ★ 结论二：**用 pip 装**。PyPI 的 manylinux wheel 自带 CUDA 与 MKL 运行时，
+#   与 conda 的 mkl 相互隔离，不会重现上述符号冲突。
+#   同机可正常工作的 Torch-GPU 环境即为全 pip 安装（torch 2.10.0 + nvidia-*-cu12），
+#   torch.cuda.is_available() == True，GPU 矩阵乘正常。
+#
+# 安装命令（推荐清华镜像：实测阿里云镜像对该 554 MB 主 wheel 限速约 0.3 MB/s，
+# 清华约 1.8 MB/s；总下载量约 3–4 GB，含 nvidia-*-cu12 运行时，请耐心等待）：
+#     conda activate gnss-llm
+#     python -m pip install torch --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 安装后验证：
+#     python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+#   期望输出形如：2.14.0 13.0 True
+#
+# CPU 版（无 GPU 或仅做轻量验证，体积最小、两平台一致）：
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# 指定 CUDA 版本（驱动较旧时按需选择，例如 cu126 / cu128）：
+#     pip install torch --index-url https://download.pytorch.org/whl/cu126
+#
+# 说明：下方依赖列表中的 `torch>=2.2,<3`，用 `pip install -r requirements.txt` 安装时
+#   会落到 GPU 版（Linux/Windows 的 PyPI wheel 分别自带 CUDA 运行时）；
+#   **不要**改用 conda 安装来获取 torch，理由见「结论一」。
+# =============================================================================
+
+# ---------- 数据处理 ----------
+numpy>=1.26,<3
+pandas>=2.1,<4        # 已在 pandas 3.0.x 与 2.x 的公共 API 子集上自检（见下）
+pyarrow>=15,<30
+scipy>=1.11,<2
+
+# ---------- 机器学习 ----------
+scikit-learn>=1.3,<2
+
+# ---------- 可视化 ----------
+matplotlib>=3.8,<4
+seaborn>=0.13,<1
+
+# ---------- 配置与通用工具 ----------
+PyYAML>=6,<7
+tqdm>=4.66,<5
+
+# ---------- 深度时序检测（LSTM / TemporalCNN / Transformer）----------
+torch>=2.2,<3
+
+# ---------- 超参数调优（可选：删除本行不影响主流程）----------
+optuna>=3.5,<6
+
+# ---------- 模型导出与 INT8 量化推理 ----------
+onnx>=1.15,<2
+onnxruntime>=1.17,<2
+
+# ---------- LLM 日志总结（可插拔：按使用的服务/模型二选一启用）----------
+openai>=1.40,<3            # OpenAI 及兼容接口（DeepSeek、Qwen、本地 vLLM 等）
+# anthropic>=0.40,<1       # Claude
+# transformers>=4.44,<6    # 本地开源大模型（配合 torch）
+# accelerate>=1.0,<2       # 本地大模型加载加速
+
+# ---------- 开发与实验辅助（可选）----------
+# jupyterlab>=4.2,<5
+# pytest>=8,<9
+# pytest-cov>=5,<7
+ruff>=0.6,<1

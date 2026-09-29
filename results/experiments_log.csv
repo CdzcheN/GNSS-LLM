@@ -1,0 +1,4 @@
+experiment_id,config_hash,model_version,data_version,split_version,seed,metrics,figure_paths,checkpoint_path,conclusion
+eval-holdout-pred,33a630fe77f6,,,"holdout:(26, 27, 28, 29, 30)",42,"{""accuracy"": 0.5622, ""macro_f1"": 0.33324755789174154}",,,
+lstm-seed42,d286e97a7afb,v1,features_1221.csv,"{'train': (12, 13, 14, 15, 16, 17, 18, 19, 20), 'validation': (21, 22, 23, 24, 25), 'holdout': (26, 27, 28, 29, 30)}",42,"{""best_metric"": NaN, ""epochs_run"": 6}",,results/checkpoints/model.pt,
+eval-holdout-pred,33a630fe77f6,,,"holdout:(26, 27, 28, 29, 30)",42,"{""accuracy"": 0.5622, ""macro_f1"": 0.33324755789174154}",results/figures/holdout_pred_timeline.png|results/figures/holdout_pred_confusion.png|results/figures/holdout_pred_class_metrics.png,,

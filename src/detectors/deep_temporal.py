@@ -32,8 +32,9 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.data import schema
 from src.detectors.base import AttackType, BaseDetector, DetectionResult, DetectorStatus, numeric
-from src.train.dataset import build_windows
+from src.train.dataset import build_windows, split_by_events, windows_from_segments
 
 #: 默认模型配置（§10.2 配置基线）。
 DEFAULT_LSTM_LAYERS: int = 2
@@ -398,30 +399,59 @@ class DeepTemporalDetector(BaseDetector):
         if not columns:
             raise ValueError("未找到可用数值特征列，请检查特征表内容")
 
-        # 按时间顺序划分：训练在前、验证在后（§16.2 一期基线），禁止随机打散（§2.5）
-        boundary = int(len(frame) * (1.0 - validation_ratio))
-        if boundary < config.window_s or len(frame) - boundary < config.window_s:
-            raise ValueError(
-                f"数据切分后不足一个窗口（{config.window_s}）："
-                f"train={boundary}，validation={len(frame) - boundary}"
-            )
-        train_frame = frame.iloc[:boundary]
-        val_frame = frame.iloc[boundary:]
+        # §16.2：**优先按攻击事件切分**。1221 当天三类样本在时间上不交错
+        # （Spoofing 12:32–16:44、Jamming 16:56–17:20、Normal 全天），按时间切分会把异常
+        # 全部放进训练集、验证集只剩 Normal，导致早停挑出“全判正常”的模型。
+        split = None
+        try:
+            split = split_by_events(frame, label_column=schema.LABEL_COLUMN)
+        except ValueError as exc:
+            print(f"[deep_temporal] 事件级切分不可用（{exc}），退化为按时间切分")
 
-        mean = train_frame[columns].mean().to_numpy(dtype="float64")
-        std = train_frame[columns].std().to_numpy(dtype="float64")
+        if split is not None:
+            train_rows = frame.iloc[split.indices("train")]
+            print(f"[deep_temporal] 事件级切分：{split.summary()}")
+        else:
+            boundary = int(len(frame) * (1.0 - validation_ratio))
+            if boundary < config.window_s or len(frame) - boundary < config.window_s:
+                raise ValueError(
+                    f"数据切分后不足一个窗口（{config.window_s}）："
+                    f"train={boundary}，validation={len(frame) - boundary}"
+                )
+            train_rows = frame.iloc[:boundary]
+
+        # 标准化统计量**只从训练段估计**（§6.4、§16.3）
+        mean = train_rows[columns].mean().to_numpy(dtype="float64")
+        std = train_rows[columns].std().to_numpy(dtype="float64")
         std = np.where(std == 0, 1.0, std)
 
-        def _normalize(part: Any) -> Any:
-            normalized = part.copy()
-            normalized[columns] = (part[columns].to_numpy(dtype="float64") - mean) / std
-            return normalized
+        normalized = frame.copy()
+        normalized[columns] = (frame[columns].to_numpy(dtype="float64") - mean) / std
 
-        X_train, y_train, _ = build_windows(
-            _normalize(train_frame), columns, window_s=config.window_s
-        )
-        X_val, y_val, _ = build_windows(
-            _normalize(val_frame), columns, window_s=config.window_s
+        if split is not None:
+            # 按段分别构建窗口，避免跨段拼接产生“假窗口”（§16.3）
+            X_train, y_train = windows_from_segments(
+                normalized, split.train_segments, columns,
+                label_column=schema.LABEL_COLUMN, window_s=config.window_s,
+            )
+            X_val, y_val = windows_from_segments(
+                normalized, split.validation_segments, columns,
+                label_column=schema.LABEL_COLUMN, window_s=config.window_s,
+            )
+        else:
+            X_train, y_train, _ = build_windows(
+                normalized.iloc[: int(len(frame) * (1.0 - validation_ratio))],
+                columns, window_s=config.window_s,
+            )
+            X_val, y_val, _ = build_windows(
+                normalized.iloc[int(len(frame) * (1.0 - validation_ratio)):],
+                columns, window_s=config.window_s,
+            )
+
+        print(
+            f"[deep_temporal] 样本：train {X_train.shape} / val {X_val.shape}；"
+            f"train 标签分布 {np.bincount(y_train.astype('int64'), minlength=config.num_classes).tolist()}；"
+            f"val 标签分布 {np.bincount(y_val.astype('int64'), minlength=config.num_classes).tolist()}"
         )
 
         def _loader(X: Any, y: Any, shuffle: bool) -> Any:

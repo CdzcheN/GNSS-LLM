@@ -274,6 +274,217 @@ def build_windows(
     )
 
 
+@dataclass(slots=True)
+class EventSplit:
+    """事件级数据划分（§16.2）。
+
+    每条划分由若干**连续行区间**组成，而非单一行集合——因为时间序列在拼接不连续段时
+    会产生“假窗口”，必须按段分别构建窗口（见 ``windows_from_segments``）。
+
+    Attributes:
+        train_segments: 训练侧的行区间（``(start, end)`` 闭区间）。
+        validation_segments: 验证侧的行区间。
+        details: 每类别的事件段统计（段数 / 训练段数 / 验证段数）。
+    """
+
+    train_segments: tuple[tuple[int, int], ...] = ()
+    validation_segments: tuple[tuple[int, int], ...] = ()
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def indices(self, part: str = "train") -> Any:
+        """把段展开为行索引数组。
+
+        Args:
+            part: ``"train"`` 或 ``"validation"``。
+
+        Returns:
+            行索引的 numpy 数组。
+
+        Raises:
+            ValueError: ``part`` 非法。
+        """
+        import numpy as np
+
+        if part == "train":
+            segments = self.train_segments
+        elif part == "validation":
+            segments = self.validation_segments
+        else:
+            raise ValueError(f"part 需为 train/validation，实际为 {part!r}")
+
+        blocks = [np.arange(start, end + 1) for start, end in segments]
+        if not blocks:
+            return np.array([], dtype="int64")
+        return np.concatenate(blocks)
+
+    @property
+    def train_rows(self) -> int:
+        """训练侧行数。"""
+        return int(sum(end - start + 1 for start, end in self.train_segments))
+
+    @property
+    def validation_rows(self) -> int:
+        """验证侧行数。"""
+        return int(sum(end - start + 1 for start, end in self.validation_segments))
+
+    def summary(self) -> Mapping[str, Any]:
+        """返回可写入实验记录的摘要。"""
+        return {
+            "train_rows": self.train_rows,
+            "validation_rows": self.validation_rows,
+            "train_segments": len(self.train_segments),
+            "validation_segments": len(self.validation_segments),
+            "per_class": dict(self.details),
+        }
+
+
+def find_event_segments(
+    frame: Any,
+    label_column: str = "Label",
+) -> Mapping[int, tuple[tuple[int, int], ...]]:
+    """识别连续同标签的段（§16.2 的事件区间）。
+
+    Args:
+        frame: 已按时间排序的特征表。
+        label_column: 标签列。
+
+    Returns:
+        ``{标签: ((start, end), ...)}``，Normal（0）与各攻击类别分别给出。
+
+    Raises:
+        ValueError: 缺少标签列。
+    """
+    if label_column not in frame.columns:
+        raise ValueError(f"缺少标签列 {label_column!r}")
+
+    labels = frame[label_column].to_numpy()
+    if len(labels) == 0:
+        return {}
+
+    segments: dict[int, list[tuple[int, int]]] = {}
+    start = 0
+    for index in range(1, len(labels) + 1):
+        if index == len(labels) or labels[index] != labels[start]:
+            segments.setdefault(int(labels[start]), []).append((start, index - 1))
+            start = index
+    return {label: tuple(items) for label, items in segments.items()}
+
+
+def split_by_events(
+    frame: Any,
+    label_column: str = "Label",
+    validation_event_ratio: float = 1.0 / 3.0,
+    normal_validation_ratio: float = 0.3,
+) -> EventSplit:
+    """按事件划分数据，**保证验证集含所有出现过的类别**（§16.2）。
+
+    动机：1221 当天三类样本在时间上并不交错（Spoofing 12:32–16:44、Jamming 16:56–17:20、
+    Normal 全天）。若按时间 70/30 切分，异常会全部落进训练集、验证集只剩 Normal，
+    于是“全判正常”在验证集上看起来完美，早停会挑出无效模型。
+
+    做法：把每类的连续段按时间顺序排列，**末尾若干段**归验证集；
+    每类至少保留 1 段给训练集，且只有 1 段的类别不做切分（整体归训练）。
+
+    Args:
+        frame: 已按时间排序的特征表。
+        label_column: 标签列。
+        validation_event_ratio: 异常类别用于验证的事件段比例。
+        normal_validation_ratio: Normal 段用于验证的比例。
+
+    Returns:
+        EventSplit。
+
+    Raises:
+        ValueError: 缺少标签列，或切分后任一侧为空。
+    """
+    segments = find_event_segments(frame, label_column)
+    if not segments:
+        raise ValueError("未识别到任何数据段")
+
+    train_segments: list[tuple[int, int]] = []
+    validation_segments: list[tuple[int, int]] = []
+    details: dict[str, Any] = {}
+
+    for label, segs in sorted(segments.items()):
+        ratio = normal_validation_ratio if label == 0 else validation_event_ratio
+        count = len(segs)
+        if count <= 1:
+            holdout = 0
+        else:
+            holdout = int(round(count * ratio))
+            holdout = max(1, min(holdout, count - 1))  # 至少留 1 段做验证、1 段做训练
+
+        split_at = count - holdout
+        train_segments.extend(segs[:split_at])
+        validation_segments.extend(segs[split_at:])
+        details[schema.LABEL_NAMES.get(label, str(label))] = {
+            "segments": count,
+            "train": split_at,
+            "validation": holdout,
+        }
+
+    split = EventSplit(
+        train_segments=tuple(sorted(train_segments)),
+        validation_segments=tuple(sorted(validation_segments)),
+        details=details,
+    )
+    if not split.train_segments:
+        raise ValueError("切分后训练侧为空，请检查数据或调低验证比例")
+    if not split.validation_segments:
+        raise ValueError("切分后验证侧为空，请检查数据或调高验证比例")
+    return split
+
+
+def windows_from_segments(
+    frame: Any,
+    segments: Sequence[tuple[int, int]],
+    feature_columns: Sequence[str],
+    label_column: str = "Label",
+    window_s: int = DEFAULT_WINDOW_S,
+    stride_s: int | None = None,
+) -> tuple[Any, Any]:
+    """在给定行区间内**分别**构建窗口（避免跨段拼接产生假窗口）。
+
+    时间序列被切成多段后直接拼接会产生“上一段尾 + 下一段头”的伪窗口，
+    这些窗口在真实时间上并不连续，必须避免（§2.5、§16.3）。
+
+    Args:
+        frame: 特征表（已排序）。
+        segments: 行区间序列。
+        feature_columns: 特征列。
+        label_column: 标签列。
+        window_s: 窗口长度。
+        stride_s: 步长；``None`` 表示等于窗口长度。
+
+    Returns:
+        ``(X, y)``：形状 ``(B, W, D)`` 与 ``(B,)``。
+
+    Raises:
+        ImportError: 未安装 numpy。
+        ValueError: 所有段都短于一个窗口。
+    """
+    import numpy as np
+
+    windows: list[Any] = []
+    targets: list[Any] = []
+    for start, end in segments:
+        block = frame.iloc[start : end + 1]
+        if len(block) < window_s:
+            continue
+        block_x, block_y, _ = build_windows(
+            block, feature_columns, label_column, window_s=window_s, stride_s=stride_s
+        )
+        windows.append(block_x)
+        targets.append(block_y)
+
+    if not windows:
+        raise ValueError(
+            f"所有段都短于一个窗口（window_s={window_s}），无法构建样本；"
+            "请调小窗口或改用更长的连续段"
+        )
+    return np.concatenate(windows), np.concatenate(targets)
+
+
 def loeo_folds(counts: Mapping[str, int] = LOEO_EVENT_COUNTS) -> Mapping[str, int]:
     """返回 Leave-One-Event-Out 的折数（§16.2）。
 

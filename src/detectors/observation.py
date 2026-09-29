@@ -50,6 +50,11 @@ FEATURE_OUTLIER_COUNT: str = "res_outlier_count"
 FEATURE_RES_MAX: str = "res_valid_max"
 FEATURE_RES_DELTA: str = "res_delta"
 
+#: 主判据特征：**原始列 ``MaxRes``**。
+#: 标定显示其区分度（AUC 0.859）明显强于派生的 ``res_valid_max``（0.746）——
+#: 欺骗期间单个卫星的残差可达数百米，而逐历元有效卫星的残差最大值反而被平均掉。
+FEATURE_MAX_RES: str = "MaxRes"
+
 
 def residual_outliers(
     data: Mapping[str, Any] | None,
@@ -122,17 +127,23 @@ class ObservationDetector(BaseDetector):
         outlier_count = numeric(data, FEATURE_OUTLIER_COUNT)
         res_max = numeric(data, FEATURE_RES_MAX)
         res_delta = numeric(data, FEATURE_RES_DELTA)
+        max_res = numeric(data, FEATURE_MAX_RES)
 
-        if outlier_count is None and res_max is None and res_delta is None:
+        if outlier_count is None and res_max is None and res_delta is None and max_res is None:
             return DetectionResult(
                 detector_id=self.detector_id,
                 attack_type=AttackType.NORMAL,
                 confidence=0.0,
-                evidence={"reason": "features_missing", "required": [FEATURE_OUTLIER_COUNT, FEATURE_RES_MAX]},
+                evidence={
+                    "reason": "features_missing",
+                    "required": [FEATURE_MAX_RES, FEATURE_OUTLIER_COUNT, FEATURE_RES_MAX],
+                },
                 status=DetectorStatus.SKIPPED,
             )
 
         severity = 0.0
+        if max_res is not None and threshold > 0:
+            severity = max(severity, min(1.0, max_res / threshold))
         if outlier_count is not None and required_outliers > 0:
             severity = max(severity, min(1.0, outlier_count / required_outliers))
         if res_max is not None and threshold > 0:
@@ -141,12 +152,14 @@ class ObservationDetector(BaseDetector):
             severity = max(severity, min(1.0, max(0.0, res_delta) / baseline_rise))
 
         triggered = (
-            (outlier_count is not None and outlier_count >= required_outliers)
+            (max_res is not None and max_res >= threshold)
+            or (outlier_count is not None and outlier_count >= required_outliers)
             or (res_max is not None and res_max > threshold)
             or (res_delta is not None and res_delta >= baseline_rise)
         )
 
         evidence: dict[str, Any] = {
+            "MaxRes": max_res,
             "res_outlier_count": outlier_count,
             "res_valid_max": res_max,
             "res_delta": res_delta,

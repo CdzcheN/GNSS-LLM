@@ -8,7 +8,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# ---- 数据与实验产物（体积大，不入库；仅保留目录占位）----
+# ---- 数据与实验产物（体积大 / 可再生产物，不入库；仅保留目录占位与模板）----
 data/*
 !data/.gitkeep
 splits/*
@@ -17,11 +17,13 @@ results/metrics/*
 !results/metrics/.gitkeep
 results/figures/*
 !results/figures/.gitkeep
+results/check*/
 results/checkpoints/
-results/check/
-results/pred_*.csv
-results/events.jsonl
-results/events.csv
+results/*.csv
+!results/experiments_log.csv
+results/*.jsonl
+results/*.json
+results/*.png
 
 # ---- 模型权重与导出文件 ----
 *.pt

@@ -11,6 +11,60 @@
 
 ---
 
+## [impl-0.4.0] 2026-09-29
+
+**Author**：项目组（由 AI 编码助手生成，待负责人确认署名）
+
+**Reason**：用户反馈“测试结果看不出问题”。诊断后发现两个根因并修复，同时新增阈值标定工具。
+
+### 诊断结论（基于全量 42,932 行）
+
+| 根因 | 证据 | 影响 |
+|---|---|---|
+| **数据划分错误（致命）** | 三类的时段不交错（Spoofing 12:32–16:44、Jamming 16:56–17:20、Normal 全天），按时间 70/30 切分后 **验证集只剩 Normal（12,880 行，0 个异常）** | 早停会挑出“全判正常”的模型——任何训练都无效 |
+| **判据选错特征** | 区分度：原始列 `MaxRes` AUC **0.859**，而当时用的派生列 `res_valid_max` 仅 0.746；`cn0_delta_db` AUC 0.967 但阈值为经验值 −3.0 | Spoofing 召回仅有 0.271 |
+| 阈值未标定 | 配置里多个键标注为“可运行起点” | 与文档 §16.3 的标定要求不符 |
+
+### Changed Modules
+
+| 模块 | 文件 | 变更 |
+|---|---|---|
+| 划分 | `src/train/dataset.py` | **新增** `find_event_segments` / `split_by_events` / `EventSplit` / `windows_from_segments`：按**连续同标签段**划分，每类的末尾若干段归验证集，**保证验证集含所有出现过的类别**；按段分别建窗，避免跨段拼接产生“假窗口” |
+| 训练 | `src/detectors/deep_temporal.py` | `train()` 改为**优先事件级切分**（不可用时退化为时间切分并打印提示）；标准化统计量仍只取训练段；打印 train/val 的标签分布便于核对 |
+| 检测器 | `src/detectors/observation.py` | S5 主判据改用**原始列 `MaxRes`**（新增 `FEATURE_MAX_RES`），`res_valid_max` 降为辅助 |
+| 工具 | `scripts/calibrate_thresholds.py` | **新增**：在验证集上逐特征扫阈值（方向 × 数据分位点），输出最佳 F1 工作点、AUC、结论与可粘贴的 `config.yaml` 片段；NaN 按行剔除 |
+| 配置 | `config.yaml` | 写入标定值：`cno.cn0_drop_db: −5.295`、`observation.residual_threshold: 176.7`、`pvt.clock_jump: 304`；标注 `satellite` 标定无效（AUC 0.667 / F1 0.038） |
+| 测试 | `tests/test_calibration.py` | **新增** 18 个用例：事件段识别、划分不重叠且每类都有样本、按段建窗不跨段、AUC/阈值扫描的数值正确性、NaN 剔除 |
+
+### 标定结果（验证集：事件级切分，含三类）
+
+| 检测器 | 目标 | 最佳特征 | AUC | 阈值 | F1 |
+|---|---|---|---|---|---|
+| cno | Jamming | `cn0_delta_db` | 0.967 | ≤ −5.295 | 0.577 |
+| observation | Spoofing | `MaxRes` | 0.859 | ≥ 176.7 | 0.571 |
+| pvt | Spoofing | `clkB_diff` | 0.831 | ≥ 304 | 0.394 |
+| satellite | Jamming | `valid_sat_count` | 0.667 | ≤ 5 | 0.038（几乎无效） |
+
+### Experiment Impact
+
+全量 42,932 行自检（非正式实验）：
+
+| 指标 | 调优前 | 调优后 |
+|---|---|---|
+| Accuracy | 0.5622 | **0.7476** |
+| Macro-F1 | 0.3332 | **0.4554** |
+| Normal F1 | 0.691 | **0.841** |
+| Spoofing Recall | 0.271 | **0.503** |
+| Jamming F1 | 0（完全检不出） | 0.069 |
+| 冲突率 | 0.1698 | **0.1469** |
+
+**仍未解决的问题**：Jamming 召回偏低（全量 R=0.045，而验证集上单特征 R=0.913）——说明**事件间异质性显著**，
+必须用 Leave-One-Event-Out（§16.2 的 19 个欺骗事件 / 10 个干扰事件）做交叉验证，固定单次划分会高估性能。
+
+测试总数 222 → 240。
+
+---
+
 ## [impl-0.3.1] 2026-09-29
 
 **Author**：项目组（由 AI 编码助手生成，待负责人确认署名）

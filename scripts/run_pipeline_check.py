@@ -194,8 +194,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"    出图失败（不影响链路结论）：{type(exc).__name__}: {exc}")
 
     print("[check] 完成：链路通畅。")
-    print("[check] 注意：检测器阈值尚未标定（见 config.yaml 的 detectors 段），"
-          "上述指标不代表最终性能；正式评估请走 §16–§18 的实验流程。")
+    print("[check] 注意：S3/S5/S6 的阈值已在验证集上初步标定（见 config.yaml 内注释），"
+          "但尚未做事件级交叉验证（LOEO），指标仍不代表最终性能。")
+    print("[check] 重新标定请运行：python -m scripts.calibrate_thresholds --emit-yaml")
     return 0
 
 

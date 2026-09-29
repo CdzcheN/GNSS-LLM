@@ -58,19 +58,22 @@ detectors:                       # 8.2 策略分类；8.4 注册表字段
   threshold:
     rules: []                    # S1 固定阈值规则（标定后填写 feature/op/threshold/attack/weight）
   cno:
-    cn0_drop_db: -3.0            # C/N0 相对基线下降阈值（dB，负值表示下降）
-    min_valid_sat: 4             # 有效卫星数下限（颗）
+    cn0_drop_db: -5.295          # 【已标定】cn0_delta_db <= 阈值，AUC=0.967 F1=0.577
+    min_valid_sat: 4             # 有效卫星数下限（颗）；标定显示该判据区分度弱
   satellite:
     sat_count_drop: -3.0         # 卫星数相对基线下降阈值（颗）
     min_sat_count: 4             # 可见卫星数下限（颗）
+    # ⚠ 标定结果：本检测器最佳特征 AUC 仅 0.667、F1 0.038（几乎无效）。
+    #   原因：Jamming 期间卫星数下降幅度不足以与 Normal 波动区分。
+    #   建议：降权、或在 §18.5 消融中单列报告，不要指望它贡献召回。
   observation:
-    residual_threshold: 15.0     # 伪距残差超限阈值
-    outlier_count: 2             # 超限残差个数下限
-    baseline_rise: 5.0           # 残差均值相对基线抬升量
+    residual_threshold: 176.7    # 【已标定】主判据：原始列 MaxRes >= 阈值，AUC=0.859 F1=0.571
+    outlier_count: 2             # 辅助判据：超限残差个数下限
+    baseline_rise: 5.0           # 辅助判据：残差均值相对基线抬升量
   pvt:
     acc_rise: 20.0               # 精度指标相对基线抬升量
     dop_rise: 1.0                # DOP 相对基线抬升量
-    clock_jump: 100000.0         # 钟差一阶差分跳变阈值
+    clock_jump: 304              # 【已标定】clkB_diff 跳变阈值，AUC=0.831 但精确率偏低(0.251)
 
 fusion:                          # 12.2 / 12.3
   mode: confidence_weighted

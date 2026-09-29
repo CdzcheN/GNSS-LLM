@@ -1,0 +1,114 @@
+# GNSS 多特征自适应干扰监测系统 —— 全局配置
+# 除标注「待定」外，参数取值均来自《项目开发文档 v1.1》对应章节
+
+project:
+  name: GNSS 多特征自适应干扰监测系统
+  version: v1.1
+  seed: 42                       # 20.4 基线固定随机种子（研究性实验可多 seed 重复）
+
+data:
+  dataset_dir: data
+  normal_files:                  # §5.2 正常数据：9 月 12–30 日（实测 4 个文件）
+    - gnss_complete_featuresObsSatPvt_12-16.csv
+    - gnss_complete_featuresObsSatPvt_17-20.csv
+    - gnss_complete_featuresObsSatPvt_21-25.csv
+    - gnss_complete_featuresObsSatPvt_26-30.csv
+  three_state_file: gnss_complete_featuresObsSatPvtSpoofJamming.csv
+  labels_csv: labels_1221.csv
+  window_s: 60                   # 6.2 默认窗口 W = 60 s
+  window_sensitivity_s: [10, 30, 60, 120]   # 6.2 / 18.7 窗口敏感性实验
+  sat_mask_cno_threshold: 0.5    # 5.4 Q3：sat_mask = (CNO > 0.5)
+  baseline_sat_count: 8          # 7.3 卫星覆盖度基线（质量评分用）
+  freq_s: 1.0                    # 采样间隔，实测 1 Hz（缺口与质量评分依赖）
+  standardization: train_only    # 6.4 测试集只复用训练阶段 scaler，禁止重新 fit
+
+splits:                          # §16.2 数据划分（按日期切分，时间连续且互不重叠，禁止随机打散）
+  # 区间表示法：[起始日, 结束日]（含端点）。权威定义见 src/data/schema.py:SPLIT_BY_DAY
+  normal:                        # 正常数据实验：9 月 12–30 日共 19 天
+    train: [12, 20]              # 12–20 日（对应 _12-16 与 _17-20 两个文件）
+    validation: [21, 25]         # 21–25 日（对应 _21-25）
+    holdout: [26, 30]            # 26–30 日（对应 _26-30）
+  event_1221:                    # 1221 实验
+    strategy: leave_one_event_out   # 事件级切分，禁止随机窗口打散
+    spoofing_events: 19
+    jamming_events: 10
+    fallback_time_ratio: [0.7, 0.3] # 一期基线：前 70% / 后 30%
+
+model:                           # 10.2 默认模型
+  name: multi_source_fusion_lstm_3class   # 完整模型名（供 §20.3 实验记录）
+  backbone: lstm                 # 骨干类型，对应 scripts/train_detector.py --model
+  lstm_layers: 2
+  hidden_size: 64
+  window_s: 60
+  num_classes: 3
+  labels: {0: Normal, 1: Spoofing, 2: Jamming}
+  baselines: [temporal_cnn, small_transformer]      # 10.4 深度学习基线
+  long_window_models: [itransformer, tft, patchtst] # 10.4 长窗口研究对比
+
+class_imbalance:                 # 10.5
+  class_weight: {Normal: 1.0, Spoofing: 3.9, Jamming: 70.0}
+  focal_loss_gamma: 2.0
+  support: [resample, temporal_augment, minority_event_sampling]
+
+detectors:                       # 8.2 策略分类；8.4 注册表字段
+  registry: DetectorRegistry
+  registered: [threshold, spectrum, cno, satellite, observation, pvt, deep_temporal]
+  # 以下阈值均为「可运行起点，尚未标定」：正式值须在验证集上完成标定后回填
+  # （§16.3 禁止用测试集标定；§20.3 要求记录每次实验）
+  threshold:
+    rules: []                    # S1 固定阈值规则（标定后填写 feature/op/threshold/attack/weight）
+  cno:
+    cn0_drop_db: -3.0            # C/N0 相对基线下降阈值（dB，负值表示下降）
+    min_valid_sat: 4             # 有效卫星数下限（颗）
+  satellite:
+    sat_count_drop: -3.0         # 卫星数相对基线下降阈值（颗）
+    min_sat_count: 4             # 可见卫星数下限（颗）
+  observation:
+    residual_threshold: 15.0     # 伪距残差超限阈值
+    outlier_count: 2             # 超限残差个数下限
+    baseline_rise: 5.0           # 残差均值相对基线抬升量
+  pvt:
+    acc_rise: 20.0               # 精度指标相对基线抬升量
+    dop_rise: 1.0                # DOP 相对基线抬升量
+    clock_jump: 100000.0         # 钟差一阶差分跳变阈值
+
+fusion:                          # 12.2 / 12.3
+  mode: confidence_weighted
+  order: [rule_coordination, confidence_weighting, temporal_stability, event_level]
+
+event:                           # 13 章
+  alert_merge_window_s: 30       # 13.2 连续告警合并窗口
+  confirm_after_s: 3.0           # 13.3 SUSPECTED→CONFIRMED 的持续门限（可运行起点，待标定）
+  states: [NORMAL, SUSPECTED, CONFIRMED, ONGOING, RECOVERED]
+
+agent:                           # 9.6 智能体实现层级
+  level: 0                       # 0 固定规则 / 1 上下文规则路由 / 2 轻量学习策略选择器 / 3 Agent + Tool Calling
+  fallback_detector: threshold   # 9.5 原则 D：Agent 异常时固定规则检测器独立运行
+  max_decision_steps: 5          # 19.3 有限决策步数（占位，待实验确定）
+
+llm:                             # 14 章；不进入 1 Hz 核心检测关键路径
+  enabled: false
+  provider: openai               # 可插拔接口
+  model_name: ""                 # 待定：按实际使用的服务/本地模型填写
+  prompt_version: v1
+  mode: async                    # 15.2 异步总结，告警不依赖 LLM
+
+evaluation:                      # 17 章评价指标（指标键与 scripts/evaluate.py 常量一致）
+  second_level: [accuracy, precision, recall, f1, macro_f1, auc_roc, auc_pr, fpr]
+  class_level: [spoofing_p_r_f1, jamming_p_r_f1]   # §17.2：Spoofing / Jamming 各自的 P/R/F1
+  event_level: [event_detection_rate, event_recall, detection_delay,
+                false_alarm_events, missed_events, event_level_precision]
+  strategy_level: [avg_detector_calls, deep_model_call_rate, avg_decision_time,
+                   avg_detector_time, conflict_rate, recheck_trigger_rate]
+  system_level: [end_to_end_latency, throughput, memory, parameters,
+                 int8_delta, llm_summary_latency, alert_availability]
+
+deploy:                          # 19.2 量化策略
+  quantize_int8: true
+  target_accuracy_drop: 0.01     # INT8 后精度损失目标 < 1%
+  export_format: onnx
+
+results:
+  metrics_dir: results/metrics
+  figures_dir: results/figures
+  experiments_log: results/experiments_log.csv
